@@ -12,6 +12,9 @@ import software.amazon.awssdk.services.s3.model.*;
 import software.amazon.awssdk.services.s3.paginators.ListObjectsV2Iterable;
 import software.amazon.awssdk.services.sqs.SqsClient;
 import software.amazon.awssdk.services.sqs.model.*;
+import com.amazonaws.services.sqs.AmazonSQS;
+import com.amazonaws.services.sqs.AmazonSQSClientBuilder;
+import com.amazonaws.services.sqs.model.SendMessageRequest;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -301,6 +304,31 @@ public class AWS {
         return Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES)) +
                 Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_NOT_VISIBLE)) +
                 Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED));
+    }
+
+    public void sendMessage(SqsClient sqsClient, String queueUrl, String messageBody) {
+        SendMessageRequest sendMessageRequest = SendMessageRequest.builder()
+            .queueUrl(queueUrl)
+            .messageBody(messageBody)
+            .build();
+
+        sqsClient.sendMessage(sendMessageRequest);
+        System.out.println("Message sent to queue: " + queueUrl);
+    }
+
+     public void receiveMessages(SqsClient sqsClient, String queueUrl) {
+        ReceiveMessageRequest receiveMessageRequest = ReceiveMessageRequest.builder()
+            .queueUrl(queueUrl)
+            .maxNumberOfMessages(10) // Max number of messages to retrieve
+            .waitTimeSeconds(20) // Long polling (wait for 20 seconds for messages to appear)
+            .build();
+
+        ReceiveMessageResponse response = sqsClient.receiveMessage(receiveMessageRequest);
+        response.messages().forEach(message -> {
+            System.out.println("Received message: " + message.body());
+            // After processing, delete the message
+            deleteMessage(sqsClient, queueUrl, message.receiptHandle());
+        });
     }
 
 
