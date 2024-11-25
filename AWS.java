@@ -30,7 +30,7 @@ public class AWS {
     private final S3Client s3;
     private final SqsClient sqs;
     private final Ec2Client ec2;
-    private final String bucketName;
+    public final String bucketName;
     private static AWS instance = null;
 
     private AWS() {
