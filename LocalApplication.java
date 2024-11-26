@@ -19,6 +19,7 @@ public class LocalApplication {
             setup();
             String S3path = aws.uploadFileToS3(keyPath, new File(inFilePath));
             String queueUrl = aws.createQueue("newTaskQueue");
+            // create some tyoe of done task queue
             sendMessage(queueUrl, S3path);
 // iterate on getAllInstances and check if label = manager
 // if no, create EC2 for manager 
