@@ -40,16 +40,56 @@ public class AWS {
         bucketName = "my-bucket";
     }
 
-    public static AWS getInstance() {
-        if (instance == null) {
-            return new AWS();
-        }
-
-        return instance;
+  public static AWS getInstance() {
+    if (instance == null) {
+        instance = new AWS();
     }
+    return instance;
+  }
 
 
 //////////////////////////////////////////  EC2
+
+  // EC2
+    public String createEC2(String script, String tagName, int numberOfInstances) {
+        Ec2Client ec2 = Ec2Client.builder().region(region2).build();
+        RunInstancesRequest runRequest = (RunInstancesRequest) RunInstancesRequest.builder()
+                .instanceType(InstanceType.M4_LARGE)
+                .imageId(ami)
+                .maxCount(numberOfInstances)
+                .minCount(1)
+                .keyName("vockey")
+                .iamInstanceProfile(IamInstanceProfileSpecification.builder().name("LabInstanceProfile").build())
+                .userData(Base64.getEncoder().encodeToString((script).getBytes()))
+                .build();
+
+
+        RunInstancesResponse response = ec2.runInstances(runRequest);
+
+        String instanceId = response.instances().get(0).instanceId();
+
+        software.amazon.awssdk.services.ec2.model.Tag tag = Tag.builder()
+                .key("Name")
+                .value(tagName)
+                .build();
+
+        CreateTagsRequest tagRequest = (CreateTagsRequest) CreateTagsRequest.builder()
+                .resources(instanceId)
+                .tags(tag)
+                .build();
+
+        try {
+            ec2.createTags(tagRequest);
+            System.out.printf(
+                    "[DEBUG] Successfully started EC2 instance %s based on AMI %s\n",
+                    instanceId, ami);
+
+        } catch (Ec2Exception e) {
+            System.err.println("[ERROR] " + e.getMessage());
+            System.exit(1);
+        }
+        return instanceId;
+    }
 
     public void runInstanceFromAMI(String ami) {
         RunInstancesRequest runInstancesRequest = RunInstancesRequest.builder()
@@ -168,17 +208,22 @@ public class AWS {
         }
     }
 
-    public void createBucket(String bucketName) {
-        s3.createBucket(CreateBucketRequest
-                .builder()
-                .bucket(bucketName)
-                .createBucketConfiguration(
-                        CreateBucketConfiguration.builder()
-                                .build())
-                .build());
-        s3.waiter().waitUntilBucketExists(HeadBucketRequest.builder()
-                .bucket(bucketName)
-                .build());
+       public void createBucketIfNotExists(String bucketName) {
+        try {
+            s3.createBucket(CreateBucketRequest
+                    .builder()
+                    .bucket(bucketName)
+                    .createBucketConfiguration(
+                            CreateBucketConfiguration.builder()
+                                    .locationConstraint(BucketLocationConstraint.US_WEST_2)
+                                    .build())
+                    .build());
+            s3.waiter().waitUntilBucketExists(HeadBucketRequest.builder()
+                    .bucket(bucketName)
+                    .build());
+        } catch (S3Exception e) {
+            System.out.println(e.getMessage());
+        }
     }
 
     public SdkIterable<S3Object> listObjectsInBucket(String bucketName) {
@@ -306,13 +351,13 @@ public class AWS {
                 Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED));
     }
 
-    public void sendMessage(SqsClient sqsClient, String queueUrl, String messageBody) {
+    public void sendMessage(String queueUrl, String messageBody) {
         SendMessageRequest sendMessageRequest = SendMessageRequest.builder()
             .queueUrl(queueUrl)
             .messageBody(messageBody)
             .build();
 
-        sqsClient.sendMessage(sendMessageRequest);
+        sqs.sendMessage(sendMessageRequest);
         System.out.println("Message sent to queue: " + queueUrl);
     }
 
