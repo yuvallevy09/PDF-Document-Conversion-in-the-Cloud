@@ -30,14 +30,15 @@ public class AWS {
     private final S3Client s3;
     private final SqsClient sqs;
     private final Ec2Client ec2;
-    public final String bucketName;
+    private final String bucketName;
     private static AWS instance = null;
+
 
     private AWS() {
         s3 = S3Client.builder().region(region1).build();
         sqs = SqsClient.builder().region(region1).build();
         ec2 = Ec2Client.builder().region(region1).build();
-        bucketName = "my-bucket";
+        bucketName = "yh-bucket";
     }
 
   public static AWS getInstance() {
@@ -358,7 +359,7 @@ public class AWS {
             .build();
 
         sqs.sendMessage(sendMessageRequest);
-        System.out.println("Message sent to queue: " + queueUrl);
+        System.out.println("Message sent to queue: " + queueUrl + "MessageBody" + messageBody);
     }
 
      public void receiveMessages(SqsClient sqsClient, String queueUrl) {
