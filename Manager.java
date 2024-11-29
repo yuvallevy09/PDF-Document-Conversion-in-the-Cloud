@@ -41,13 +41,13 @@ public static void main(String[] args) {
     }
 
 }
-}
+
 
  private static void manageWorkers(int messageCount) {
         int requiredWorkers = Math.min((messageCount + MESSAGES_PER_WORKER - 1) / MESSAGES_PER_WORKER, MAX_WORKERS);
 
         // Get the count of currently running workers
-        List<Instance> runningWorkers = aws.getAllInstancesWithLabel(aws.Label.worker);
+        List<Instance> runningWorkers = aws.getAllInstancesWithLabel(aws.Label.Worker);
         int currentWorkerCount = runningWorkers.size();
 
         if (currentWorkerCount < requiredWorkers) {
@@ -107,5 +107,6 @@ public boolean isTeminateMessage(String messageBody){
     return false;
 }
 }
+
 
 
