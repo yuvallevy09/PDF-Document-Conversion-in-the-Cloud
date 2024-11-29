@@ -15,6 +15,9 @@ import software.amazon.awssdk.services.sqs.model.*;
 import com.amazonaws.services.sqs.AmazonSQS;
 import com.amazonaws.services.sqs.AmazonSQSClientBuilder;
 import com.amazonaws.services.sqs.model.SendMessageRequest;
+import com.amazonaws.services.sqs.model.AmazonSQSException;
+import com.amazonaws.services.sqs.model.SendMessageBatchRequest;
+import com.amazonaws.services.sqs.model.SendMessageBatchRequestEntry;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -27,17 +30,20 @@ public class AWS {
 
     public final String IMAGE_AMI = "ami-08902199a8aa0bc09";
     public Region region1 = Region.US_WEST_2;
+    // public Region region2 = Region.US_EAST_1;
     private final S3Client s3;
     private final SqsClient sqs;
     private final Ec2Client ec2;
     private final String bucketName;
     private static AWS instance = null;
+    // private final int regionLim = 9;
 
 
     private AWS() {
         s3 = S3Client.builder().region(region1).build();
         sqs = SqsClient.builder().region(region1).build();
-        ec2 = Ec2Client.builder().region(region1).build();
+        ec2Region1 = Ec2Client.builder().region(region1).build();
+        // ec2Region2 = Ec2Client.builder().region(region2).build();
         bucketName = "yh-bucket";
     }
 
@@ -53,7 +59,6 @@ public class AWS {
 
   // EC2
     public String createEC2(String script, String tagName, int numberOfInstances) {
-        Ec2Client ec2 = Ec2Client.builder().region(region2).build();
         RunInstancesRequest runRequest = (RunInstancesRequest) RunInstancesRequest.builder()
                 .instanceType(InstanceType.M4_LARGE)
                 .imageId(ami)
@@ -170,6 +175,15 @@ public class AWS {
         System.out.println("Terminated instance: " + instanceId);
     }
 
+/*  
+    Questions:
+        - Should we try use 2 regions in order to be able to take advantage of more than 9 ec2 per region?
+        - If so, so we need to make that we allocate an additonal bucket in another region?
+        - Do we need to implement our own constraints in order not to exceed 19 ec2 instances? 
+ */
+
+
+
 
     ////////////////////////////// S3
 
@@ -185,6 +199,16 @@ public class AWS {
 
         s3.putObject(req, file.toPath()); // we don't need to check if the file exist already
         // Return the S3 path of the uploaded file
+        return "s3://" + bucketName + "/" + keyPath;
+    }
+
+    public String createEmptyFileInS3(String keyPath) throws Exception {
+        PutObjectRequest req =
+                PutObjectRequest.builder()
+                
+                .bucket(bucketName)
+                        .key(keyPath)
+                        .build();
         return "s3://" + bucketName + "/" + keyPath;
     }
 
@@ -362,22 +386,42 @@ public class AWS {
         System.out.println("Message sent to queue: " + queueUrl + "MessageBody" + messageBody);
     }
 
-     public void receiveMessages(SqsClient sqsClient, String queueUrl) {
-        ReceiveMessageRequest receiveMessageRequest = ReceiveMessageRequest.builder()
-            .queueUrl(queueUrl)
-            .maxNumberOfMessages(10) // Max number of messages to retrieve
-            .waitTimeSeconds(20) // Long polling (wait for 20 seconds for messages to appear)
-            .build();
+    public void sendMessageBatches(String queueUrl, List<String> messages, String messageId) { // check if needs to be synchronized 
 
-        ReceiveMessageResponse response = sqsClient.receiveMessage(receiveMessageRequest);
-        response.messages().forEach(message -> {
-            System.out.println("Received message: " + message.body());
-            // After processing, delete the message
-            deleteMessage(sqsClient, queueUrl, message.receiptHandle());
-        });
+        Iterator<String> msgIter = messages.iterator();
+        while (msgIter.hasNext()) {
+            List<SendMessageBatchRequestEntry> entries = new ArrayList<>(); 
+
+            // create batches of 10 entries (aws limitations)
+            for (int i = 1; msgIter.hasNext() && i <= 10; i++ ) {
+                entries.add(new SendMessageBatchRequestEntry("msg_" + i, msgIter.next()));
+            }
+
+            SendMessageBatchRequest batchRequest = new SendMessageBatchRequest()
+                .withQueueUrl(queueUrl)
+                .withEntries(entries);
+
+            // send batch
+            sqs.sendMessageBatch(batchRequest);
+        }
+    }    
+
+
+    public List<Message> receiveMessages(String queueUrl) {
+        return sqs.receiveMessage(queueUrl).getMessages();
     }
 
 
+    public void deleteMessages(String queueUrl, List<Message> messages) {
+        for (Message m : messages) {
+            sqs.deleteMessage(queueUrl, m.getReceiptHandle());
+        }
+    }        
+
+    public void deleteMessage(String queueUrl,Message message) {
+        sqs.deleteMessage(queueUrl, message.getReceiptHandle());
+    }
+    
     ///////////////////////
 
     public enum Label {
