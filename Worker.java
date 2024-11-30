@@ -17,6 +17,7 @@ public class Worker {
     private final AWS aws; // AWS helper class
     private final String responseQueueUrl; // SQS queue for results
     private final String bucketName; // S3 bucket for uploading results
+    //private boolean terminate
 
     public Worker(String taskQueueUrl, String responseQueueUrl, String bucketName) {
         this.aws = AWS.getInstance();

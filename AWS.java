@@ -38,6 +38,8 @@ public class AWS {
     private static AWS instance = null;
     // private final int regionLim = 9;
 
+    private final int summaryLimit = 10;
+
 
     private AWS() {
         s3 = S3Client.builder().region(region1).build();
@@ -160,6 +162,26 @@ public class AWS {
                 .toList();
     }
 
+    public List<String> getAllInstanceIdsWithLabel(Label label) throws InterruptedException {
+    DescribeInstancesRequest describeInstancesRequest =
+            DescribeInstancesRequest.builder()
+                    .filters(Filter.builder()
+                            .name("tag:Label")
+                            .values(label.toString())
+                            .build())
+                    .build();
+
+    DescribeInstancesResponse describeInstancesResponse = ec2.describeInstances(describeInstancesRequest);
+
+    return describeInstancesResponse.reservations().stream()
+            .flatMap(r -> r.instances().stream())
+            .map(Instance::instanceId) // Extract only the instance ID
+            .toList();
+    }
+
+
+
+
     public void terminateInstance(String instanceId) {
         TerminateInstancesRequest terminateRequest = TerminateInstancesRequest.builder()
                 .instanceIds(instanceId)
@@ -271,6 +293,21 @@ public class AWS {
         return listRes.contents();
     }
 
+
+public List<S3Object> listFilesInS3(String prefix) { //new
+    // Create a request to list objects with the specified prefix
+    ListObjectsV2Request listRequest = ListObjectsV2Request.builder()
+            .bucket(bucketName)
+            .prefix(prefix) // Directory path (e.g., "responses/inputFileId/")
+            .build();
+
+    // Execute the request and get the response
+    ListObjectsV2Response listResponse = s3.listObjectsV2(listRequest);
+
+    // Return the list of S3 objects
+    return listResponse.contents();
+}
+
     public void deleteEmptyBucket(String bucketName) {
         DeleteBucketRequest deleteBucketRequest = DeleteBucketRequest.builder().bucket(bucketName).build();
         try {
@@ -376,15 +413,40 @@ public class AWS {
                 Integer.parseInt(attributes.get(QueueAttributeName.APPROXIMATE_NUMBER_OF_MESSAGES_DELAYED));
     }
 
-    public void sendMessage(String queueUrl, String messageBody) {
+
+    public String sendMessage(String queueUrl, String messageBody) {
         SendMessageRequest sendMessageRequest = SendMessageRequest.builder()
             .queueUrl(queueUrl)
             .messageBody(messageBody)
             .build();
 
-        sqs.sendMessage(sendMessageRequest);
-        System.out.println("Message sent to queue: " + queueUrl + "MessageBody" + messageBody);
+        SendMessageResponse sendMessageResponse = sqs.sendMessage(sendMessageRequest);
+        String messageId = sendMessageResponse.messageId();
+        return messageId;
+}
+
+    public String sendMessageWithId(String queueUrl, String messageBody, String fileId) {
+        MessageAttributeValue fileIdAttribute = MessageAttributeValue.builder()
+            .stringValue(fileId)
+            .dataType("String")
+            .build();
+
+        SendMessageRequest sendMessageRequest = SendMessageRequest.builder()
+            .queueUrl(queueUrl)
+            .messageBody(messageBody)
+            .messageAttributes(Map.of("FileId", fileIdAttribute)) // Add the fileId attribute
+            .build();
+
+        SendMessageResponse sendMessageResponse = sqs.sendMessage(sendMessageRequest);
+        
+        String messageId = sendMessageResponse.messageId();
+        System.out.println("Message sent with MessageId: " + messageId + " and FileId: " + fileId);
+        return messageId;
     }
+
+
+
+
 
     public void sendMessageBatches(String queueUrl, List<String> messages, String messageId) { // check if needs to be synchronized 
 
@@ -412,6 +474,43 @@ public class AWS {
     }
 
 
+    public List<Message> receiveMessageWithId(String queueUrl, String appFileId) {
+        ReceiveMessageRequest receiveMessageRequest = ReceiveMessageRequest.builder()
+            .queueUrl(queueUrl)
+            .maxNumberOfMessages(1) // Fetch one message at a time
+            .waitTimeSeconds(10) 
+            .messageAttributeNames("All") 
+            .build();
+
+        ReceiveMessageResponse receiveMessageResponse = sqs.receiveMessage(receiveMessageRequest);
+        List<Message> messages = receiveMessageResponse.messages();
+
+        if (messages.isEmpty()) {
+            System.out.println("No messages available.");
+            return null;
+        }
+
+        Message message = messages.get(0);
+
+        String fileId = message.messageAttributes().getOrDefault("FileId", null) != null
+            ? message.messageAttributes().get("FileId").stringValue()
+            : null;
+
+        if (fileId != null && fileId.equals(appFileId)) {
+            // Process the message if the FileId matches
+            System.out.println("Processing message: " + message.body());
+            deleteMessage(queueUrl, message.receiptHandle());
+            return message;
+        } else {
+            // Return the message to the queue by setting visibility timeout to 0
+            System.out.println("Returning message to the queue. FileId: " + fileId);
+            changeMessageVisibility(queueUrl, message.receiptHandle(), 0);                  /// need to change vidibility 
+            return null;
+        }
+    }
+
+
+
     public void deleteMessages(String queueUrl, List<Message> messages) {
         for (Message m : messages) {
             sqs.deleteMessage(queueUrl, m.getReceiptHandle());
@@ -420,6 +519,10 @@ public class AWS {
 
     public void deleteMessage(String queueUrl,Message message) {
         sqs.deleteMessage(queueUrl, message.getReceiptHandle());
+    }
+
+    public int getSummaryLimit(){
+        return summaryLimit;
     }
     
     ///////////////////////

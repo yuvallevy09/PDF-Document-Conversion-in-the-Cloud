@@ -9,7 +9,7 @@ import API.AWS;
 import software.amazon.awssdk.services.s3.S3Client;
 import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.S3Exception;
-
+import software.amazon.awssdk.services.sqs.model.Message;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -23,14 +23,13 @@ import java.util.List;
 public class Manager {
     final static AWS aws = AWS.getInstance();
     private static final int MAX_WORKERS = 19;
-    private static boolean terminate = false;
+    private static volatile boolean terminate = false;
     private static String inputQueueUrl;
     private static String workersQueueUrl = aws.createQueue("workersQueue");
     private static String responseQueueUrl = aws.createQueue("responseQueue");
     private static HashMap<String, Integer> localAppMap = new HashMap<>();
 
-public static void main(String[] args) {
-    
+public static void main(String[] args) {  
     while (!terminate){
 
         //processing input files
@@ -41,88 +40,49 @@ public static void main(String[] args) {
             processInputFile(input);
             aws.deleteMessage(inputQueueUrl, input.getReceiptHandle());
         }
-
-        int msgCount = aws.getQueueSize("workersQueue");
-        manageWorkers(msgCount); // create correct amount of workers 
-        
         //processing workers output files
-        List<Message> responseList = aws.receiveMessages(responseQueueUrl);
-        for(Message response : responseList){
-            String messageBody = response.body();
-            System.out.println("Received response: " + messageBody);
-    
-            // Split the response message by tab separator (\t)
-            String[] parts = messageBody.split("\t");
-    
-            // Ensure that the response message has the correct number of parts
-            if (parts.length == 4) {
-                String operation = parts[0];
-                String pdfUrl = parts[1];
-                String s3ResultsPath = parts[2];
-                String fileId = parts[3];
-                
-                int cur = localAppMap.get(fileId) - 1;
-                if (cur <= 0) {
-                    summarize(fileId);
-                }
-                localAppMap.get(fileId).set(cur);
-                // create unique file in s3 to store results of workers 
-                String s3outputPath = "summary" + File.separator + fileId; 
-                aws.uploadFileToS3(s3outputPath, );
-            } else {
-                System.err.println("Invalid message format: " + messageBody);
-            }
+        processResponseMessage();
         
-    }
-    
-        }
-       
-    }
+    }   
 }
 
- private static void manageWorkers(int messageCount) {
-        int requiredWorkers = Math.min((messageCount + MESSAGES_PER_WORKER - 1) / MESSAGES_PER_WORKER, MAX_WORKERS);
-
-        // Get the count of currently running workers
-        List<Instance> runningWorkers = aws.getAllInstancesWithLabel(aws.Label.Worker);
-        int currentWorkerCount = runningWorkers.size();
-
-        if (currentWorkerCount < requiredWorkers) {
-            int workersToStart = requiredWorkers - currentWorkerCount;
-            System.out.printf("Starting %d new workers...\n", workersToStart);
-            String script = "#!/bin/bash\n" +
-            "exec > /var/log/user-data.log 2>&1\n" +
-            "java -jar /home/ec2-user/manager.jar\n"; //change it to worker
-            aws.createEC2(script, "Worker", workersToStart);
-        }
-    }
-
-public void processInputFile(Message inputFile){
-    if(isTeminateMessage(inputFile.messageBody)){
-        List<Instance> workers = aws.getAllInstancesWithLabel(aws.Label.Worker);
-        for (Instance worker : workers){
-            aws.terminateInstance();
-        }
-    } else {
+public static void processInputFile(Message inputFile){
+    if(isTeminateMessage(inputFile.body())){
+        terminate();
+    } 
+    else {
         String inputFileId = inputFile.getMessageId();
+        String[] messageParts = inputFile.messageBody().split("\t");
+        String keyPath = messageParts[0];
+        int tasksPerWorker = Integer.valueOf(messageParts[1]);
         String filePath = System.getProperty("user.dir") + File.separator + "input-files" + File.separator + inputFileId; //locally on EC2
-
-        //download file from s3 to ec2
-        aws.downloadFileFromS3(inputFile.messageBody, filePath); 
-
-        // read URLs and operations from the input file
-        List<String> urlsAndOperations = parseInputFile(filePath, inputFileId);
-
+        File file = new File(filePath);
+        try {
+            // Attempt to create the file
+            if (file.createNewFile()) {
+                System.out.println("File created: " + file.getAbsolutePath());
+            } else {
+                System.out.println("File already exists.");
+            }
+        } catch (IOException e) {
+            // Handle potential IO exceptions
+            System.out.println("An error occurred while creating the file.");
+            e.printStackTrace();
+        }
+        aws.downloadFileFromS3(keyPath, file);//download file from s3 to ec2
+        List<String> urlsAndOperations = parseInputFile(filePath, inputFileId); // read URLs and operations from the input file
         localAppMap.put(inputFileId, urlsAndOperations.size());
+        manageWorkers(urlsAndOperations.size(), tasksPerWorker); // create correct amount of workers 
 
         // send url and ops to worker queue
-        aws.sendMessageBatches(workersQueueUrl, urlsAndOperations);
-
+        for (String msg : urlsAndOperations) {
+            aws.sendMessage(workersQueueUrl, msg);
+        }
+        // aws.sendMessageBatches(workersQueueUrl, urlsAndOperations);
     }
 }
 
-
-private List<String> parseInputFile(String filePath, String inputFileId) {
+private static List<String> parseInputFile(String filePath, String inputFileId) {
     List<String> urlsAndOperations = new ArrayList<>();
     try (BufferedReader reader = new BufferedReader(new FileReader(filePath))) {
         String line;
@@ -136,11 +96,169 @@ private List<String> parseInputFile(String filePath, String inputFileId) {
 }
 
 
-public boolean isTeminateMessage(String messageBody){
-    if (messageBody.equals("terminate"))
+private static void manageWorkers(int messageCount, int tasksPerWorker) {
+    int requiredWorkers = Math.min((messageCount + tasksPerWorker - 1) / tasksPerWorker, MAX_WORKERS);
+
+    List<Instance> runningWorkers = aws.getAllInstancesWithLabel(aws.Label.Worker);  // Get the count of currently running workers
+    int currentWorkerCount = runningWorkers.size();
+
+    if (currentWorkerCount < requiredWorkers) {
+        int workersToStart = requiredWorkers - currentWorkerCount;
+        System.out.printf("Starting %d new workers...\n", workersToStart);
+        String script = "#!/bin/bash\n" +
+        "exec > /var/log/user-data.log 2>&1\n" +
+        "java -jar /home/ec2-user/manager.jar\n"; //change it to worker
+        aws.createEC2(script, "Worker", workersToStart);
+    }
+}
+
+private static void processResponseMessage(){
+    List<Message> responseList = aws.receiveMessages(responseQueueUrl);
+    for(Message response : responseList) {
+        String messageBody = response.body();
+        System.out.println("Received response: " + messageBody);
+
+        // Split the response message by tab separator (\t)
+        String[] parts = messageBody.split("\t");
+
+        // Ensure that the response message has the correct number of parts
+        if (parts.length == 4) {
+            String operation = parts[0];
+            String pdfUrl = parts[1];
+            String s3ResultsPath = parts[2];
+            String fileId = parts[3];
+
+            // Generate a unique key for the individual response
+            String responseFileKey = "responses/" + fileId + "/" + response.messageId() + ".txt";
+            String responseData = String.format("%s\t%s\t%s", operation, pdfUrl, s3ResultsPath);
+            File tempFile = createTempFile(responseData);
+            // Upload the response to S3
+            aws.uploadFileToS3(responseFileKey, tempFile);
+            tempFile.delete();
+            
+            int cur = localAppMap.get(fileId) - 1;
+            if (cur == 0) {
+                String summaryFile = generateSummaryFile(fileId);
+                System.out.println("Summary file created: " + summaryFileKey);
+                int summaryNum = (fileId.hashCode() & Integer.MAX_VALUE) % aws.getSummaryLimit() + 1;
+                String summaryQueueUrl = aws.getQueueUrl("summaryQueue_" + summaryNum); 
+                aws.sendMessageWithId(summaryQueueUrl, summaryFile, fileId);
+                System.out.println("Summary file sent to: summaryQueue_" + summaryNum + " with  fileId: " + fileId);
+            }
+            localAppMap.get(fileId).set(cur);
+        } 
+
+        else {
+            System.err.println("Invalid message format: " + messageBody);
+        }
+}
+}
+
+private static File createTempFile(String content) {
+    File tempFile = null;
+    try {
+        tempFile = File.createTempFile("response", ".txt"); // Create a temporary file
+        try (BufferedWriter writer = new BufferedWriter(new FileWriter(tempFile))) { // Write the content to the temporary file
+            writer.write(content);
+        }
+    } catch (IOException e) {
+        e.printStackTrace();
+        throw new RuntimeException("Failed to create temporary file for upload");
+    }
+    return tempFile;
+}
+
+private static String generateSummaryFile(String inputFileId) {
+    String responseDirKey = "responses/" + inputFileId + "/";
+    String summaryFileKey = "summaries/" + inputFileId + ".txt";
+
+    // List all response files in S3
+    List<S3Object> responseFiles = aws.listFilesInS3(responseDirKey);
+
+    // Combine content into a summary file
+    StringBuilder summaryContent = new StringBuilder();
+    for (S3Object responseFile : responseFiles) {
+
+        // Download the response file content from S3 to a local file
+        String filePath = System.getProperty("user.dir") + File.separator + "output-files" + File.separator + inputFileId; //locally on EC2
+        File localFile = new File(filePath);
+        try {
+            // Attempt to create the file
+            if (file.createNewFile()) {
+                System.out.println("File created: " + file.getAbsolutePath());
+            } else {
+                System.out.println("File already exists.");
+            }
+        } catch (IOException e) {
+            // Handle potential IO exceptions
+            System.out.println("An error occurred while creating the file.");
+            e.printStackTrace();
+        }
+        aws.downloadFileFromS3(responseFile.key(),localFile);
+        String fileContent = readFileContent(localFile);
+        summaryContent.append(fileContent).append(System.lineSeparator());
+        localFile.delete();
+    }
+
+    // Upload the summary file to S3
+    return (aws.uploadFileToS3(summaryFileKey, summaryContent.toString()));
+}
+
+private static String readFileContent(File file) {
+    StringBuilder content = new StringBuilder();
+    try (BufferedReader reader = new BufferedReader(new FileReader(file))) {
+        String line;
+        while ((line = reader.readLine()) != null) {
+            content.append(line).append(System.lineSeparator());
+        }
+    } catch (IOException e) {
+        e.printStackTrace();
+    }
+    return content.toString();
+}
+
+public static void terminate() {
+    while (!(localAppMap.values().stream().allMatch(count -> count == 0))) { //not all job completed
+        try {
+            Thread.sleep(5000); // Poll every 5 seconds
+            System.out.println("Waiting for all jobs to complete...");
+        } catch (InterruptedException e) {
+            e.printStackTrace();
+        }
+    }
+    generateAllPendingSummaries(); // Create response messages for any completed jobs, if needed
+    terminateAllWorkers();
+    List<String> managerIds = aws.getAllInstanceIdsWithLabel(aws.Label.Manager);
+    aws.terminateInstance(managerIds.get(0)); //terminate the Manager
+}
+
+private static void generateAllPendingSummaries() {
+    System.out.println("Generating pending summaries...");
+    for (String inputFileId : localAppMap.keySet()) {
+        if (localAppMap.get(inputFileId) == 0) {
+            generateSummaryFile(inputFileId); // Generate the summary for completed jobs
+        }
+    }
+}
+
+private static void terminateAllWorkers() {
+    System.out.println("Terminating all worker instances...");
+    List<String> workerIds = aws.getAllInstanceIdsWithLabel(aws.Label.Worker);
+    for (String id : workerIds) {
+        aws.terminateInstance(id);
+        System.out.println("Terminated worker instance: " + id);
+    }
+}
+
+public static boolean isTeminateMessage(String messageBody){
+    if (messageBody.equals("terminate")){
+        terminate = true;
+        System.out.println("Manager got terminate message");
         return true;
+    }
     return false;
 }
+
 }
 
 
