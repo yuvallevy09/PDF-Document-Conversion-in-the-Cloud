@@ -105,9 +105,17 @@ private static void manageWorkers(int messageCount, int tasksPerWorker) {
     if (currentWorkerCount < requiredWorkers) {
         int workersToStart = requiredWorkers - currentWorkerCount;
         System.out.printf("Starting %d new workers...\n", workersToStart);
+        // String script = "#!/bin/bash\n" +
+        // "exec > /var/log/user-data.log 2>&1\n" +
+        // "java -jar /home/ec2-user/manager.jar\n"; //change it to worker
+
         String script = "#!/bin/bash\n" +
-        "exec > /var/log/user-data.log 2>&1\n" +
-        "java -jar /home/ec2-user/manager.jar\n"; //change it to worker
+        "echo Manager jar running\n" +
+        "echo s3://" + aws.bucketName + "/" + aws.managerJarKey + "\n" +
+        "mkdir ManagerFiles\n" +
+        "aws s3 cp s3://" + aws.bucketName + "/" + aws.managerJarKey + " ./ManagerFiles/" + aws.managerJarName + "\n" +
+        "echo manager copy the jar from s3\n" +
+        "java -jar /ManagerFiles/" + aws.managerJarName + "\n";
         aws.createEC2(script, "Worker", workersToStart);
     }
 }
