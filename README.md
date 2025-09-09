@@ -1,6 +1,6 @@
 ## PDF Document Conversion in the Cloud
 
-A production-style distributed system that converts large lists of PDFs to images/HTML/text on AWS and returns a single HTML summary back to the client.
+A distributed system that converts large lists of PDFs to images/HTML/text on AWS and returns a single HTML summary back to the client.
 
 ### TL;DR
 - **Input**: text file, lines of `<operation>\t<PDF URL>` and an integer `n` (PDFs per worker).
