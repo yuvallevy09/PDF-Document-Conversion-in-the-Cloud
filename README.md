@@ -94,7 +94,7 @@ java -jar app.jar input.txt output.html n [terminate]
 - Workers are stateless; tasks can be reassigned if a worker dies.
 - Lab policy limits total EC2 instances; Manager enforces caps when scaling workers.
 
-### What I learned
+### What we learned
 - Designing concurrent managers and fan-out/fan-in pipelines on AWS.
 - Trade-offs between small-object storage in S3 and local aggregation.
 - Practical queue-topology design to balance cost, throughput, and fairness.
